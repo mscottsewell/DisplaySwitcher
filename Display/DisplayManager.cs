@@ -79,15 +79,11 @@ public static class DisplayManager
             return false;
         }
 
-        // 1) Apply DPI scaling first (independent of the mode change).
-        foreach (var d in preset.Displays)
-        {
-            if (d.ScalingPercent > 0)
-                DpiHelper.SetDpiScaling(d.DeviceName, d.ScalingPercent);
-        }
-
-        // 2) Stage resolution/position/orientation for every display with CDS_NORESET,
-        //    then commit once so the whole layout changes atomically.
+        // 1) Stage resolution/position/orientation for every display with CDS_NORESET,
+        //    then commit once so the whole layout changes atomically. DPI scaling is
+        //    applied afterwards (step 4) because the scaling value is relative to the
+        //    resolution-dependent "recommended" baseline: setting it before the mode
+        //    change computes it against the old resolution and lands on the wrong percent.
         var attached = new HashSet<string>(GetAttachedDeviceNames(), StringComparer.OrdinalIgnoreCase);
         int staged = 0;
 
@@ -140,12 +136,36 @@ public static class DisplayManager
             return false;
         }
 
-        // 3) Commit all staged changes.
+        // 2) Commit all staged changes.
         int commit = ChangeDisplaySettingsEx(null, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero);
         if (commit != DISP_CHANGE_SUCCESSFUL)
         {
             message = $"Failed to apply layout: {DescribeResult(commit)}.";
             return false;
+        }
+
+        // 3) Let the mode change settle so the CCD source mapping and the "recommended"
+        //    scaling baseline reflect the resolution we just applied.
+        Thread.Sleep(200);
+
+        // 4) Apply DPI scaling now that the target resolution is live. Track any that
+        //    fail so a silently-skipped scale is surfaced instead of reported as success.
+        var scaleFailures = new List<string>();
+        foreach (var d in preset.Displays)
+        {
+            if (d.ScalingPercent == 0)
+                continue;
+            if (!attached.Contains(d.DeviceName))
+                continue;
+            if (!DpiHelper.SetDpiScaling(d.DeviceName, d.ScalingPercent))
+                scaleFailures.Add(d.FriendlyName);
+        }
+
+        if (scaleFailures.Count > 0)
+        {
+            message = $"Applied '{preset.Name}', but could not set scaling for: " +
+                      $"{string.Join(", ", scaleFailures)}.";
+            return true;
         }
 
         message = $"Applied '{preset.Name}'.";
