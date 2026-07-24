@@ -10,6 +10,9 @@ namespace DisplaySwitcher.Display;
 /// </summary>
 public static class DisplayManager
 {
+    private const int ScalingApplyAttempts = 6;
+    private const int ScalingApplyRetryDelayMs = 250;
+
     /// <summary>
     /// Enumerates every monitor attached to the desktop and snapshots its current state.
     /// </summary>
@@ -157,7 +160,7 @@ public static class DisplayManager
                 continue;
             if (!attached.Contains(d.DeviceName))
                 continue;
-            if (!DpiHelper.SetDpiScaling(d.DeviceName, d.ScalingPercent))
+            if (!ApplyScalingWithRetry(d.DeviceName, d.ScalingPercent))
                 scaleFailures.Add(d.FriendlyName);
         }
 
@@ -170,6 +173,24 @@ public static class DisplayManager
 
         message = $"Applied '{preset.Name}'.";
         return true;
+    }
+
+    private static bool ApplyScalingWithRetry(string deviceName, uint scalingPercent)
+    {
+        for (int attempt = 0; attempt < ScalingApplyAttempts; attempt++)
+        {
+            if (DpiHelper.SetDpiScaling(deviceName, scalingPercent))
+            {
+                var current = DpiHelper.GetDpiScaling(deviceName);
+                if (current.Initialized && current.Current == scalingPercent)
+                    return true;
+            }
+
+            if (attempt + 1 < ScalingApplyAttempts)
+                Thread.Sleep(ScalingApplyRetryDelayMs);
+        }
+
+        return false;
     }
 
     private static IEnumerable<string> GetAttachedDeviceNames()
